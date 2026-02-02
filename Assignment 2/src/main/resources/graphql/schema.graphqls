@@ -1,0 +1,34 @@
+# Book(id,title,author,publishedYear) -> Author(id,name,books)
+
+# Object Types
+type Book {
+    id: ID!
+    title: String!
+    author: Author!
+    publishedYear: Int
+}
+
+type Author {
+    id: ID!
+    name: String!
+    books: [Book!]!
+}
+
+# Operation Types
+
+type Query {
+    books(filter: BookFilter): [Book!]!
+    book(id: ID!) : Book
+    authors: [Author!]!
+    search(text: String!): [SearchItem!]!
+}
+
+# Input types [BookFilter(title,authorName,publishedAfter)
+input BookFilter {
+    title: String
+    authorName: String
+    publishedAfter: Int
+}
+
+# Union
+union SearchItem = Author | Book

@@ -1,0 +1,171 @@
+
+image: maven:3.9-eclipse-temurin-21
+
+# Variabili d'ambiente 
+variables:
+  DOCKER_HOST: tcp://docker:2375   #Comunicazione con il Docker; permette la creazione e la gestione di container
+  DOCKER_DRIVER: overlay2  #Impostazione del Docker driver
+  CONTAINER_IMAGE: $CI_REGISTRY_IMAGE #Indica il nome e il percorso del progetto nel GitLab Container Registry
+  MAVEN_CLI_OPTS: "--strict-checksums --threads 1C --batch-mode" #Variabili per l'aumento della sicurezza, per l'ottimizzazione dell'uso della CPU e per l'automazione.
+  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"  #Utilizzo di una repository locale per le dipendenze scaricate
+
+# Cache definita globalmente, ogni job usa la stessa definizione
+cache:
+  key: 
+    files:
+      - pom.xml  #se cambia il file pom.xml la cache include anche le nuove dipendenze
+    prefix: "$CI_COMMIT_REF_SLUG-maven"
+  paths:
+    - .m2/repository/  #percorso della cache per scaricare e salvare le dipendenze di Maven
+
+# Definizione degli stage
+stages:
+  - build
+  - verify
+  - test
+  - package
+  - release
+  - docs
+
+#Stage: build
+#Viene compilato il codice e viene creato l'eseguibile finale. 
+#Vengono scaricate le dipendenze esterne che vengono poi salvate nella cache della pipeline.
+#Viene salvato come artefatto il file compilato: in questo modo gli stage successivi che lo utilizzano lo possono recuperare dagli artefatti di questo job.
+build-job:       
+  stage: build
+  script:
+    - mvn $MAVEN_CLI_OPTS $MAVEN_OPTS compile #Utilizzo della cache globale e job eseguito in maniera non iterattiva.
+  artifacts:
+    paths: 
+      - target/ #Salva intera directory come artefatto; job successivi posso scaricare file compilati. Si ottiene risparmio di tempo e risorse.
+    expire_in: 1 hour #Scadenza breve in modo da non riempire l'archivio degli artefatti con file temporanei (servono solo a job seguenti).
+
+
+#Stage: verify; job: lint-job
+#Il job successivo si occupa di analizzare il codice sorgente a livello statico, dal punto di vista dello stile. 
+#Il comando 'checkstyle:check' viene lanciato da Maven e verifica il codice secondo le regole definite da Checkstyle.
+#Il fallimento del job viene ignorato per permettere di non bloccare lo sviluppo. Viene salvato l'artefatto in caso di fallimento del job.
+#Come specificato sul sito di Checkstyle, per funzionare correttamente una limitazione all'uso di questo strumento richiede che il codice sia compilabile, altrimenti errori di compilazione dovuti alla sintassi vengono segnalati come errori di parsing difficili da interpretare. Per questo motivo nel seguente job si mantiene la dipendenza implicita dal job di compilazione.
+lint-job:
+  stage: verify
+  script:
+    - mvn $MAVEN_CLI_OPTS $MAVEN_OPTS checkstyle:check #Utilizzo della cache globale e job non eseguito in maniera interattiva.
+  allow_failure: true
+  artifacts:
+    paths:
+      - target/checkstyle-result.xml
+    when: on_failure
+
+
+#Stage: verify; job: sats-job
+#Il job successivo si occupa di analizzare i file compilati, a livello statico, per trovare bug o errori di configurazione nel bytecode java.
+#Questo job utilizza l'artefatto del job build, che viene scaricato automaticamente. Il comando 'spotbugs:check' viene lanciato da Maven e fa parte della libreria Spotbugs.
+#Il fallimento del job viene ignorato per permettere di non bloccare lo sviluppo. Viene salvato l'artefatto in caso di fallimento del job.
+sats-job:
+  stage: verify
+  script:
+    - mvn $MAVEN_CLI_OPTS $MAVEN_OPTS spotbugs:check #Uso della cache globale e job non viene eseguito in maniera interattiva.
+  allow_failure: true
+  artifacts:
+    paths:
+      - target/spotbugsXml.xml
+    when: on_failure
+
+#Stage: verify; job: jfr-dyn_analysis
+#Nello stage verify, viene eseguito un job che si occupa di analizzare dinamicamente il codice, in parallelo con i job dedicati all'analisi statica. 
+#Per questo scopo abbiamo scelto di usare il tool Java FLight Recorder, il migliore strumento di profilazione e diagnostica integrabile in ambiente Java, che si occupa di analizzare dinamicamente le prestrazioni dell'applicazione, registrando in tempo reale l'attività della Java Virtual Machine.
+#Nel nostro caso, il profiler lavora durante l'esecuzione dei test unitari e di integrazione per capire non solo se il codice funziona ma anche la sua performance sotto il carico operativo. 
+#Il profiler registra vari eventi, tra cui l'uso della CPU e del tempo, l'udo della memoria e del garbage collector.
+#Questo job utilizza l'artefatto del job di build per lanciare i test, per cui si usa una dipendenza esplicita per evitare di scaricare gli artefatti dei job non in dipendenza.
+#Il comando dei test 'verify' viene lanciato con Maven e in contemporanea viene seguita l'istruzione che avvia il profiler, con tempo di durata pari a 20 secondi e salvataggio del report nella cartella 'target' con nome 'jfr-report.jfr' in caso di successo dei test. 
+#Per non bloccare lo sviluppo, è ignorato il fallimento del job. Si è preferito specificare la durata dell'artefatto per non sovraccaricare di file la cartella 'target'. 
+jfr-dyn_analysis:
+  stage: verify
+  dependencies:
+    - build-job 
+  script:
+    - mvn $MAVEN_CLI_OPTS $MAVEN_OPTS verify -DargLine="-XX:StartFlightRecording=duration=20s,filename=target/jfr-report.jfr"
+  allow_failure: true
+  artifacts:
+    paths:
+      - target/jfr-report.jfr 
+    when: on_success
+    expire_in: 1 hour
+
+#Stage: test; job: tests-and-coverage
+#Per lo stage di test abbiamo scelto di usare il comando 'verify' lanciato con Maven, per eseguire i test unitari e di integrazione.
+#In contemporanea per una profilazione ottimale dei test e della copertura del codica data dagli stessi si è scelto di usare lo strumento Jacoco, integrato con il relativo Plugin.
+#Il report di Jacoco viene salvato in caso di successo del job.
+#Siccome il comando verify ricompila e verifica il codice, non c'è bisogno di dipendenze.   
+tests-and-coverage:
+  stage: test
+  script:
+    - mvn $MAVEN_CLI_OPTS $MAVEN_OPTS verify jacoco:report
+  artifacts:
+    paths:
+      - target/site/jacoco
+    when: on_success
+  dependencies: []
+  only:
+    - master
+
+#Stage: package; job:springboot-app
+#Il job successivo si occupa di preparare e impacchettare l'app come un'unico JAR eseguibile.
+#Il job successivo si occupa di preparare l'applicazione per il rilascio
+#Come comando, 'clean package' è sufficiente per il nostro scopo perchè il progetto non è complesso (non sono presenti sottomoduli nei job) e l'istruzione pulisce dai vecchi file e crea il file .jar a noi necessario.
+#'clean' fa pulizia di tutti i file presenti in 'target/' e viene usato per ricompilare il codice senza usare le dipendenze create con il job di build, con lo scopo di garantire che l'artefatto finale sia sempre corretto e fresco.
+#I test unitari e di integrazione sono già stati eseguiti e verificati negli stage precedenti, perciò si possono saltare con '-DskipTests'.
+#Il comando 'spring-boot:repackage' crea il jar eseguibile con tutte le dipendenza per eseguire l'applicazione.
+#Artefatto (.jar eseguibile) viene salvato in caso di successo per i job successivi che ne dipendono.
+springboot-app:
+  stage: package
+  script:
+    - mvn $MAVEN_CLI_OPTS $MAVEN_OPTS -DskipTests clean package spring-boot:repackage
+  artifacts:
+    paths:
+      - target/*.jar
+    when: on_success
+
+#Stage:release; job: docker-image-job
+#Il job successivo si occupa di creare l'immagine Docker per l'applicazione e di registrarla nel GitLab Container Registry, completando la fase di release del codice.
+#La cache globale deve essere disabilitata per questo job perchè non viene usata, non deve essere ereditata: viene scaricato l'artefatto (file .jar) dal job precedente e viene impachettato con la tecnologia Docker.
+#Il job si attiva solo sul branch principale (master) assicurando che si rilascino immagini Docker solo epr il codice revisionato e approvato per la produzione.
+docker-image-job:
+  stage: release
+  image: docker:24.0  # Usa una versione specifica e più recente; definisce immagine principale.
+  services:
+    - name: docker:24.0-dind #Avvia servizio Docker-in-Docker che funge da server (daemon).
+      command: ["--tls=false"]  # Disabilita Transport Layer Security (protocollo di sicurezza per comunicazione) per semplicità, per evitare problemi di certificati (pratica comune).
+  variables: #variabili per dind
+    DOCKER_TLS_CERTDIR: ""  # Disabilita certificati TLS
+    DOCKER_HOST: tcp://docker:2375  #Standard per far comunicare in modo affidabile il client Docker con il servizio dind all'interno del runner. Variabile viene ridefinita per avere priorità superiore a quella d'ambiente (garanzia che sia corretta e non sovrascritta).
+  cache: {}
+  dependencies:
+    - springboot-app #Scarica artefatto prodotto
+  script:
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY #Uso del token di sicurezza integrato di GitLab per registrarsi automaticamente nel Registry
+    - docker build -t $CONTAINER_IMAGE:$CI_COMMIT_REF_NAME .  #Creazione dell'immagine
+    - docker push $CONTAINER_IMAGE:$CI_COMMIT_REF_NAME  #Caricamento dell'immagine nel registro
+  only:
+    - master
+
+#Stage: docs; job: pages-job
+#Il job successivo si occupa di generare la documentazione ufficiale del progetto e di pubblicarla come sito web statico utilizzando GitLab Pages.
+#La cache globale deve essere disabilitata per questo job perchè non viene usata (no compilazione e no test del codice).
+#Uso del branch master per riflettere l'ultima versione stabile.
+pages-job:
+  stage: docs
+  cache: {}
+  script:
+    - mvn $MAVEN_CLI_OPTS $MAVEN_OPTS javadoc:javadoc #Genera la documentazione HTML del codice sorgente e la salva in percorso 'target/site/apidocs'.
+    - mv target/site/apidocs public #Per essere pubblicato su GitLab Pages, il contenuto del sito web deve essere salvato in una cartella 'public' alla radice del repository (requisito fondamentale, altrimenti servizio non saprebbe dove cercare file documentazione). Sposta contenuto in 'public'.
+  artifacts:
+    paths:
+      - public  #Salva cartella 'public' come artefatto in caso di successo.
+    when: on_success
+  only:
+    - master
+
+
+
+
