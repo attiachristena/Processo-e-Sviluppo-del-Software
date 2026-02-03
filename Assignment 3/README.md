@@ -22,9 +22,9 @@ probabilità, della perdita causata e della sua esposizione al rischio, inclusa 
 stime sono state determinate. Le probabilità possono essere stimate come probabilità effettive
 (valori compresi tra 0 e 1) o valori ordinali (ad esempio, valori interi da 1 a 10).
 
-## Sezione 4 – I 10 principali rischi
-Sulla base dei valori stimati, il documento deve riportare i 10 principali rischi.
+## Sezione 4 – I 10 rischi principali
+Sulla base dei valori stimati, il documento deve riportare i 10 rischi principali.
 
 ## Sezione 5 – Piano di gestione e di emergenza
-Per ciascun rischio tra i 10 principali rischi, descrivere una strategia di gestione del rischio e una strategia di
+Per ciascun rischio tra i 10 rischi principali, descrivere una strategia di gestione del rischio e una strategia di
 emergenza. Ogni strategia deve essere brevemente descritta in poche frasi.
