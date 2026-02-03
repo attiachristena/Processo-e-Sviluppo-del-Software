@@ -1,5 +1,7 @@
 # Assignment 2 - CI/CD Pipeline with GitLab
 
+Voto 2° Assignment: 29
+
 ## Descrizione del Progetto
 Questo repository contiene l'implementazione di una pipeline CI/CD per un'applicazione Spring Boot (spring-one-books) utilizzando GitLab CI/CD. La pipeline automatizza i processi di build, verifica, test, packaging, release e documentazione.
 
